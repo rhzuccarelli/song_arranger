@@ -1329,6 +1329,15 @@ function loopTotalBeats(section, loop) {
   return dur / secondsPerBeat();
 }
 
+// Bar count to show in the crop strip. Derived from the measured length at the
+// project tempo (the same beats buildTimeline() draws), so the label and the
+// waveform always agree — unlike the raw filename bar tag, which can be off by
+// a factor of two for half/double-time loops.
+function loopBarsLabel(section, loop) {
+  const bars = Math.max(1, Math.round(loopTotalBeats(section, loop) / state.beatsPerBar));
+  return `${bars} bar${bars !== 1 ? 's' : ''}`;
+}
+
 
 // Format beats as bars+beats label
 function formatBeats(beats) {
@@ -1665,8 +1674,7 @@ function refreshCropUI(id) {
   const infoEl = document.getElementById(`ci-${id}`);
   if (infoEl) {
     if (!isTrimmed) {
-      const meta = state.loopMeta[block.section]?.[block.loop];
-      infoEl.innerHTML = `Full loop · ${meta ? meta.bars + ' bars · ' : ''}${fmtTime(getSectionDuration(block.section, block.loop))}`;
+      infoEl.innerHTML = `Full loop · ${loopBarsLabel(block.section, block.loop)} · ${fmtTime(getSectionDuration(block.section, block.loop))}`;
     } else {
       infoEl.innerHTML = `<span class="kept">${formatBeats(keptBeats)}</span> kept · ${fmtTime(keptDur)}`;
     }
@@ -1681,7 +1689,7 @@ function buildTimeline(block, totalBeats) {
   for (let i = 0; i < segCount; i++) {
     const beatPos    = i * ratio;
     const isMuted    = (beatPos < block.trimStart) || (beatPos >= totalBeats - block.trimEnd);
-    const isBarStart = i > 0 && (Math.round(beatPos) % bpb === 0) && ((beatPos % ratio) < ratio * 0.5);
+    const isBarStart = (Math.round(beatPos) % bpb === 0) && ((beatPos % ratio) < ratio * 0.5);
     html += `<div class="crop-seg ${isMuted ? 'seg-muted' : 'seg-active'}${isBarStart ? ' seg-bar' : ''}"></div>`;
   }
   return html;
@@ -1755,7 +1763,6 @@ function renderArrangement() {
       panel.className = 'crop-panel' + (block.cropOpen ? ' open' : '');
       panel.style.borderLeftColor = color;
 
-      const meta = state.loopMeta[block.section]?.[block.loop];
       const keptBeats = maxBeats - block.trimStart - block.trimEnd;
       panel.innerHTML = `
         <div class="crop-side">
@@ -1771,7 +1778,7 @@ function renderArrangement() {
           <div class="crop-info" id="ci-${block.id}">
             ${isTrimmed
               ? `<span class="kept">${formatBeats(keptBeats)}</span> kept · ${fmtTime(dur)}`
-              : `Full loop · ${meta ? meta.bars + ' bars · ' : ''}${fmtTime(getSectionDuration(block.section, block.loop))}`
+              : `Full loop · ${loopBarsLabel(block.section, block.loop)} · ${fmtTime(getSectionDuration(block.section, block.loop))}`
             }
           </div>
         </div>
