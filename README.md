@@ -4,7 +4,7 @@ A single-file, browser-based tool for arranging musical stems into a full song
 and exporting one clean WAV per instrument. Everything runs locally in your
 browser — no upload, no server, no dependencies.
 
-Open [`stem-arranger.html`](stem-arranger.html) in any modern browser to use it.
+Open [`index.html`](index.html) in any modern browser to use it.
 
 ## What it does
 
@@ -56,7 +56,7 @@ Supported audio formats: `wav`, `mp3`, `m4a`, `aif`, `aiff`, `ogg`, `flac`.
 
 ## Usage
 
-1. Open `stem-arranger.html` in your browser.
+1. Open `index.html` in your browser.
 2. Click **Load Stems Folder** and pick your `Stems/` directory.
 3. Click loops in the left panel to add them to the arrangement.
 4. Reorder, swap variations, and trim blocks as needed.
