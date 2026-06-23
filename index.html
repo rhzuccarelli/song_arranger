@@ -549,6 +549,25 @@ header {
   color: var(--ink-invert);
 }
 
+.block-play {
+  border: none;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: color 0.12s, background 0.12s;
+  font-family: var(--font-mono);
+}
+
+.block-play:hover {
+  color: var(--ink);
+}
+
+.arrangement-block.playing .block-play {
+  color: var(--ink-invert);
+}
+
 .block-remove {
   border: none;
   padding: 0 16px;
@@ -1177,6 +1196,7 @@ const state = {
   detectedTempo: null,        // single tempo auto-detected for the whole project
   beatsPerBar: 4,
   isPlaying: false,
+  playingBlockId: null,       // id of the block playing solo, or null for full-arrangement playback
   scheduledSources: [],
   playStartTime: 0,
   rafId: null,
@@ -1755,6 +1775,7 @@ function renderArrangement() {
           <div class="block-stems">${stemKeys.join(' · ')}</div>
           <div class="block-duration">${fmtTime(dur)}</div>
         </div>
+        <button class="block-play" title="Play this part on its own">${state.playingBlockId === block.id ? '⏸' : '▶'}</button>
         <button class="block-crop${block.cropOpen ? ' active' : ''}" data-id="${block.id}" title="Trim start/end (Shift+click = 1 bar)">✂</button>
         <button class="block-remove" title="Remove">✕</button>
       `;
@@ -1794,6 +1815,10 @@ function renderArrangement() {
 
       // Events
       el.querySelector('.block-loop-select').addEventListener('change', e => changeLoop(block.id, e.target.value));
+      el.querySelector('.block-play').addEventListener('click', () => {
+        if (state.isPlaying && state.playingBlockId === block.id) stop();
+        else playBlock(block.id);
+      });
       el.querySelector('.block-remove').addEventListener('click', () => removeFromArrangement(block.id));
       el.querySelector('.block-crop').addEventListener('click', () => {
         block.cropOpen = !block.cropOpen;
@@ -1917,12 +1942,55 @@ function play() {
   tick();
 }
 
+// Play a single block on its own, ignoring the rest of the arrangement.
+function playBlock(id) {
+  const block = state.arrangement.find(b => b.id === id);
+  if (!block) return;
+  const stems = state.stems[block.section]?.[block.loop];
+  if (!stems) return;
+  const blockDur = getBlockDuration(block);
+  if (blockDur <= 0) return;
+
+  stop();                       // tear down any current playback (global or another block)
+  const ctx = ensureAudioCtx();
+
+  const startAt       = ctx.currentTime + 0.08;
+  const trimStartSecs = trimBeatsToSecs(block.trimStart);
+
+  for (const buffer of Object.values(stems)) {
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start(startAt, trimStartSecs, blockDur);
+    state.scheduledSources.push(src);
+  }
+
+  state.playStartTime  = startAt;
+  state.isPlaying      = true;
+  state.playingBlockId = id;
+
+  const blockEl = document.querySelector(`.arrangement-block[data-id="${id}"]`);
+  if (blockEl) {
+    blockEl.classList.add('playing');
+    const pb = blockEl.querySelector('.block-play');
+    if (pb) pb.textContent = '⏸';
+  }
+
+  function tick() {
+    if (!state.isPlaying) return;
+    if (ctx.currentTime - state.playStartTime >= blockDur) { stop(); return; }
+    state.rafId = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
 function stop() {
   state.scheduledSources.forEach(src => {
     try { src.stop(); } catch (e) {}
   });
   state.scheduledSources = [];
   state.isPlaying = false;
+  state.playingBlockId = null;
   if (state.rafId) cancelAnimationFrame(state.rafId);
 
   $('#play-btn').classList.remove('playing');
@@ -1930,6 +1998,7 @@ function stop() {
   $('#transport-time').textContent = `0:00 / ${fmtTime(state.totalDuration)}`;
   $('#transport-progress-bar').style.width = '0%';
   $$('.arrangement-block').forEach(el => el.classList.remove('playing'));
+  $$('.block-play').forEach(el => el.textContent = '▶');
 }
 
 // ============================================================
