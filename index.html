@@ -1539,7 +1539,7 @@ function renderLibrary() {
     const list = group.querySelector('.loop-list');
     const eff  = effectiveTempo();
     for (const loop of loops) {
-      const stems = Object.keys(state.stems[section][loop]);
+      const stems = Object.keys(state.stems[section][loop]).sort();
       const maxDur = getSectionDuration(section, loop);
       const meta   = state.loopMeta[section]?.[loop];
 
@@ -1731,7 +1731,7 @@ function renderArrangement() {
     state.arrangement.forEach((block, idx) => {
       const color     = sectionColor(block.section);
       const loops     = Object.keys(state.stems[block.section] || {}).sort();
-      const stemKeys  = Object.keys(state.stems[block.section]?.[block.loop] || {});
+      const stemKeys  = Object.keys(state.stems[block.section]?.[block.loop] || {}).sort();
       const dur       = getBlockDuration(block);
       const maxBeats  = loopTotalBeats(block.section, block.loop);
       const isTrimmed = block.trimStart > 0 || block.trimEnd > 0;
