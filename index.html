@@ -788,6 +788,17 @@ header {
   border-color: var(--muted-on-ink);
 }
 
+/* A loop whose own length disagrees with the project tempo */
+.loop-item-bpm.warn {
+  color: var(--danger);
+  border-color: var(--danger);
+  cursor: help;
+}
+.loop-item:hover .loop-item-bpm.warn {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 /* BPM input in arrangement header */
 .bpm-control {
   display: flex;
@@ -1095,8 +1106,8 @@ header {
       <div class="panel-title">Arrangement</div>
       <div class="bpm-control">
         <span class="bpm-label">BPM</span>
-        <input id="bpm-input" class="bpm-input" type="number" min="20" max="300" step="0.01" placeholder="—" title="Song tempo — used for bar/beat trim calculations">
-        <span class="bpm-detected" id="bpm-detected" title="Click to use detected tempo"></span>
+        <input id="bpm-input" class="bpm-input" type="number" min="20" max="300" step="0.01" placeholder="—" title="Project tempo — applied to every loop and used for bar/beat trim calculations">
+        <span class="bpm-detected" id="bpm-detected" title="Click to apply the auto-detected project tempo"></span>
       </div>
       <div class="bpb-control">
         <span class="bpb-label">Beats / Bar</span>
@@ -1158,11 +1169,12 @@ header {
 const state = {
   audioCtx: null,
   stems: {},                  // { section: { loop: { instrument: AudioBuffer } } }
-  loopMeta: {},               // { section: { loop: { bars, detectedBPM } } }
+  loopMeta: {},               // { section: { loop: { bars, rawBPM } } }
   sectionOrder: [],
   instruments: new Set(),
   arrangement: [],            // [{ id, section, loop, trimStart, trimEnd, cropOpen }]
-  bpm: null,                  // user-set (or auto-detected) BPM — single source of truth
+  bpm: null,                  // user-entered BPM — overrides detection when set
+  detectedTempo: null,        // single tempo auto-detected for the whole project
   beatsPerBar: 4,
   isPlaying: false,
   scheduledSources: [],
@@ -1217,6 +1229,79 @@ function parseBars(filename) {
   return m ? parseInt(m[1], 10) : null;
 }
 
+// ---------- Project tempo (one tempo per project) ----------
+// Every loop in a folder shares one tempo. Each loop's raw estimate
+// (bars × beatsPerBar × 60 / duration) drifts because of reverb tails,
+// trimmed lengths and half/double-time bar tags, so we fold those
+// estimates onto one octave and take a robust, bar-weighted consensus.
+
+const TEMPO_FOLD_LO = 70;   // canonical octave band [lo, hi)
+const TEMPO_FOLD_HI = 140;
+const TEMPO_TOL     = 0.04; // ±4% counts as the same tempo
+
+// Round a BPM into the canonical band by halving / doubling (octave folding).
+function foldOctave(bpm, lo = TEMPO_FOLD_LO, hi = TEMPO_FOLD_HI) {
+  if (!(bpm > 0)) return bpm;
+  while (bpm < lo)  bpm *= 2;
+  while (bpm >= hi) bpm /= 2;
+  return bpm;
+}
+
+// Snap a near-clean value to a tidy tempo (sessions are almost always tidy).
+function snapTempo(bpm) {
+  const whole = Math.round(bpm);
+  if (Math.abs(bpm - whole) <= 0.35) return whole;
+  const half = Math.round(bpm * 2) / 2;
+  if (Math.abs(bpm - half) <= 0.12) return half;
+  return Math.round(bpm * 100) / 100;
+}
+
+// Collapse every loop's raw estimate into a single detected project tempo.
+function computeDetectedTempo() {
+  const samples = [];
+  for (const loops of Object.values(state.loopMeta)) {
+    for (const meta of Object.values(loops)) {
+      if (meta.rawBPM > 0) samples.push({ bpm: foldOctave(meta.rawBPM), w: meta.bars || 1 });
+    }
+  }
+  if (!samples.length) return null;
+
+  // Bar-weighted median is a robust center (longer loops vote more strongly).
+  samples.sort((a, b) => a.bpm - b.bpm);
+  const totalW = samples.reduce((s, x) => s + x.w, 0);
+  let acc = 0, center = samples[0].bpm;
+  for (const s of samples) { acc += s.w; if (acc >= totalW / 2) { center = s.bpm; break; } }
+
+  // Weighted-average only the inliers, then snap to a clean value.
+  let num = 0, den = 0;
+  for (const s of samples) {
+    if (Math.abs(s.bpm - center) / center <= TEMPO_TOL) { num += s.bpm * s.w; den += s.w; }
+  }
+  return snapTempo(den ? num / den : center);
+}
+
+// The tempo currently in force: a user-entered value overrides the detected one.
+function effectiveTempo() {
+  return state.bpm || state.detectedTempo || null;
+}
+
+// Does this loop's own length agree with the project tempo?
+// Returns { ok, rawBPM, folded } — a mismatch usually means a wrong bar tag.
+function loopTempoStatus(section, loop) {
+  const meta = state.loopMeta[section]?.[loop];
+  const eff  = effectiveTempo();
+  if (!meta || !(meta.rawBPM > 0) || !eff) return { ok: true };
+  // Bring the loop's estimate into the same octave as the project tempo.
+  let b = meta.rawBPM;
+  while (b < eff / 1.5) b *= 2;
+  while (b > eff * 1.5) b /= 2;
+  const err = Math.abs(b - eff) / eff;
+  return { ok: err <= TEMPO_TOL, rawBPM: meta.rawBPM, folded: b, err };
+}
+
+// Tidy BPM for display.
+function fmtBPM(bpm) { return Math.round(bpm * 100) / 100; }
+
 // Seconds per beat from the global BPM setting
 function secondsPerBeat() {
   return state.bpm > 0 ? 60 / state.bpm : 0;
@@ -1244,12 +1329,6 @@ function loopTotalBeats(section, loop) {
   return dur / secondsPerBeat();
 }
 
-// Detected BPM for a specific loop (from bar count + audio length)
-function detectedBPMForLoop(section, loop) {
-  const meta = state.loopMeta[section]?.[loop];
-  if (meta) return meta.detectedBPM;
-  return null;
-}
 
 // Format beats as bars+beats label
 function formatBeats(beats) {
@@ -1395,25 +1474,23 @@ async function loadFolder(files) {
     return ia - ib;
   });
 
-  // After all stems are loaded, compute detectedBPM for each loop using max stem duration
-  const allDetectedBPMs = [];
+  // After all stems are loaded, compute each loop's raw tempo estimate
+  // (bars × beatsPerBar × 60 / duration). These are per-loop guesses that
+  // drift; computeDetectedTempo() folds them into one project tempo.
   for (const [section, loops] of Object.entries(state.loopMeta)) {
     for (const [loop, meta] of Object.entries(loops)) {
       if (!meta.bars) continue;
       const maxDur = getSectionDuration(section, loop);
-      if (maxDur > 0) {
-        // BPM = (bars × beatsPerBar × 60) / duration
-        meta.detectedBPM = (meta.bars * state.beatsPerBar * 60) / maxDur;
-        allDetectedBPMs.push(meta.detectedBPM);
-      }
+      if (maxDur > 0) meta.rawBPM = (meta.bars * state.beatsPerBar * 60) / maxDur;
     }
   }
 
-  // Auto-set BPM from median of all detected values if not already set by user
-  if (!state.bpm && allDetectedBPMs.length > 0) {
-    allDetectedBPMs.sort((a, b) => a - b);
-    const median = allDetectedBPMs[Math.floor(allDetectedBPMs.length / 2)];
-    state.bpm = Math.round(median * 100) / 100;
+  // Resolve a single tempo for the whole project. state.bpm stays the one
+  // source of truth for all beat math; we seed it from the detected tempo
+  // unless the user already typed one (their value always wins).
+  state.detectedTempo = computeDetectedTempo();
+  if (!state.bpm && state.detectedTempo) {
+    state.bpm = state.detectedTempo;
     const inp = $('#bpm-input');
     if (inp) inp.value = state.bpm;
   }
@@ -1451,11 +1528,25 @@ function renderLibrary() {
     `;
 
     const list = group.querySelector('.loop-list');
+    const eff  = effectiveTempo();
     for (const loop of loops) {
       const stems = Object.keys(state.stems[section][loop]);
       const maxDur = getSectionDuration(section, loop);
-      const dBPM   = detectedBPMForLoop(section, loop);
       const meta   = state.loopMeta[section]?.[loop];
+
+      // Every loop shows the one project tempo. If a loop's own length
+      // disagrees (likely a wrong bar tag), flag it instead of showing a
+      // competing number.
+      let bpmBadge = '';
+      if (eff) {
+        const st = loopTempoStatus(section, loop);
+        if (st.ok) {
+          bpmBadge = `<div class="loop-item-bpm">${fmtBPM(eff)} BPM</div>`;
+        } else {
+          const own = `~${fmtBPM(st.folded)} BPM`;
+          bpmBadge = `<div class="loop-item-bpm warn" title="This loop's length suggests ${own}, not the project tempo of ${fmtBPM(eff)} BPM — check its bar count.">${fmtBPM(eff)} BPM ⚠</div>`;
+        }
+      }
 
       const item = document.createElement('div');
       item.className = 'loop-item';
@@ -1464,7 +1555,7 @@ function renderLibrary() {
           <div class="loop-item-name">${loop}${meta?.bars ? ` <span style="color:var(--text-3);font-size:10px">· ${meta.bars} bars</span>` : ''}</div>
           <div class="loop-item-stems" title="${stems.join(' · ')}">${stems.join(' · ')} — ${fmtTime(maxDur)}</div>
         </div>
-        ${dBPM != null ? `<div class="loop-item-bpm">${Math.round(dBPM * 100) / 100} BPM</div>` : ''}
+        ${bpmBadge}
         <div class="loop-item-add">+ ADD</div>
       `;
       item.addEventListener('click', () => addToArrangement(section, loop));
@@ -1602,20 +1693,13 @@ function updateArrangementMeta() {
   $('#transport-time').textContent = `0:00 / ${fmtTime(state.totalDuration)}`;
 }
 
-// Show the median detected BPM as a hint the user can click to apply
+// Show the single detected project tempo as a hint the user can click to apply
 function updateBPMDetectedHint() {
   const el = $('#bpm-detected');
   if (!el) return;
-  const allBPMs = [];
-  for (const [sec, loops] of Object.entries(state.loopMeta)) {
-    for (const meta of Object.values(loops)) {
-      if (meta.detectedBPM) allBPMs.push(meta.detectedBPM);
-    }
-  }
-  if (allBPMs.length === 0) { el.textContent = ''; return; }
-  allBPMs.sort((a, b) => a - b);
-  const median = allBPMs[Math.floor(allBPMs.length / 2)];
-  const rounded = Math.round(median * 100) / 100;
+  const detected = state.detectedTempo;
+  if (!detected) { el.textContent = ''; return; }
+  const rounded = fmtBPM(detected);
   el.textContent = `auto-detected: ${rounded}`;
   el.onclick = () => {
     state.bpm = rounded;
@@ -1987,7 +2071,10 @@ $('#export-btn').addEventListener('click', exportStems);
 // When BPM changes: recalculate all trim amounts and re-render crop UIs
 function onBPMChanged() {
   if (state.isPlaying) stop();
-  // Re-render the full arrangement so beat counts in crop panels refresh
+  // Re-render the library so every loop's badge follows the new project tempo
+  // (and outlier flags recompute against it), plus the arrangement so beat
+  // counts in crop panels refresh.
+  renderLibrary();
   renderArrangement();
   // Reopen any previously open crop panels
   for (const block of state.arrangement) {
