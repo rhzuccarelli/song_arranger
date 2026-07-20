@@ -1623,7 +1623,15 @@ function formatBeats(beats) {
 
 function ensureAudioCtx() {
   if (!state.audioCtx) {
-    state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    // Pin to 48kHz so every decoded/exported buffer matches hardware like the
+    // TP-7, which expects 24-bit/48kHz WAVs rather than whatever rate the
+    // host OS's default audio device happens to run at.
+    try {
+      state.audioCtx = new AC({ sampleRate: 48000 });
+    } catch (err) {
+      state.audioCtx = new AC();
+    }
   }
   if (state.audioCtx.state === 'suspended') state.audioCtx.resume();
   return state.audioCtx;
@@ -2273,7 +2281,7 @@ function stop() {
 function audioBufferToWav(buffer, extraChunks = []) {
   const numChannels = buffer.numberOfChannels;
   const sampleRate = buffer.sampleRate;
-  const bytesPerSample = 2;
+  const bytesPerSample = 3; // 24-bit PCM — matches hardware like the TP-7
   const dataSize = buffer.length * numChannels * bytesPerSample;
   const extraSize = extraChunks.reduce((sum, c) => sum + 8 + c.bytes.length + (c.bytes.length % 2), 0);
   const fileSize = 44 + extraSize + dataSize;
@@ -2317,8 +2325,11 @@ function audioBufferToWav(buffer, extraChunks = []) {
     for (let c = 0; c < numChannels; c++) {
       let s = channels[c][i];
       s = Math.max(-1, Math.min(1, s));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-      offset += 2;
+      const int24 = s < 0 ? s * 0x800000 : s * 0x7FFFFF;
+      view.setUint8(offset, int24 & 0xFF);
+      view.setUint8(offset + 1, (int24 >> 8) & 0xFF);
+      view.setUint8(offset + 2, (int24 >> 16) & 0xFF);
+      offset += 3;
     }
   }
   return new Blob([arrayBuffer], { type: 'audio/wav' });
