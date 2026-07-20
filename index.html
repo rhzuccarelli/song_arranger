@@ -1204,6 +1204,7 @@ header {
 .mc-track-status.loaded { color: var(--ink); }
 
 .mc-track-play,
+.mc-track-mute,
 .mc-track-upload,
 .mc-track-clear {
   border: none;
@@ -1219,14 +1220,27 @@ header {
 }
 
 .mc-track-play:hover,
+.mc-track-mute:hover,
 .mc-track-upload:hover { color: var(--ink); }
 
 .mc-track-clear:hover { color: var(--danger); }
 
+.mc-track-mute.active {
+  color: var(--ink);
+  font-weight: 700;
+}
+
 .mc-track-clear:disabled,
-.mc-track-play:disabled {
+.mc-track-play:disabled,
+.mc-track-mute:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+.mc-track.is-muted .mc-track-label,
+.mc-track.is-muted .mc-track-channels,
+.mc-track.is-muted .mc-track-status {
+  opacity: 0.4;
 }
 
 .mc-export-name {
@@ -2436,13 +2450,14 @@ async function exportStems() {
 // without touching the others; importing a multi-channel WAV splits it
 // back into its constituent pairs for editing.
 const mcState = {
-  tracks: [],            // [{ label, buffer: 2ch AudioBuffer|null, fileName, customLabel }]
+  tracks: [],            // [{ label, buffer: 2ch AudioBuffer|null, fileName, customLabel, muted }]
   sampleRate: null,
   tempo: null,            // user-set/imported project tempo (BPM) — embedded on export
   detectedTempo: null,    // tempo read from an imported file's ACID chunk, if any
   isPlaying: false,
   playingIndex: null,    // null = full mix, index = solo pair
   scheduledSources: [],
+  trackGains: new Map(), // track index -> live GainNode, while the full mix is playing
   playStartTime: 0,
   seekOffset: 0,         // seconds into the mix that playStartTime corresponds to
   rafId: null,
@@ -2451,7 +2466,7 @@ const mcState = {
 };
 
 function mcMakeTrack(i) {
-  return { label: `Track ${i + 1}`, buffer: null, fileName: null, customLabel: false };
+  return { label: `Track ${i + 1}`, buffer: null, fileName: null, customLabel: false, muted: false };
 }
 
 function mcInit() {
@@ -2531,6 +2546,7 @@ async function mcImportFile(file) {
       buffer: pairBuf,
       fileName: file.name,
       customLabel: false,
+      muted: false,
     }));
     $('#mc-pair-count').value = pairs.length;
 
@@ -2587,6 +2603,7 @@ function mcClearTrack(index) {
   if (!track || !track.buffer) return;
   track.buffer = null;
   track.fileName = null;
+  track.muted = false;
   if (mcState.isPlaying) mcStop();
   renderMcTracks();
 }
@@ -2628,7 +2645,7 @@ function renderMcTracks() {
 
   mcState.tracks.forEach((track, i) => {
     const el = document.createElement('div');
-    el.className = 'mc-track';
+    el.className = 'mc-track' + (track.muted ? ' is-muted' : '');
     el.dataset.index = i;
     const status = track.buffer
       ? `${track.fileName || 'Loaded'} — ${fmtTime(track.buffer.duration)}`
@@ -2642,6 +2659,7 @@ function renderMcTracks() {
         <div class="mc-track-status${track.buffer ? ' loaded' : ''}">${status}</div>
       </div>
       <button class="mc-track-play" title="Play this pair on its own" ${track.buffer ? '' : 'disabled'}>${mcState.isPlaying && mcState.playingIndex === i ? '⏸' : '▶'}</button>
+      <button class="mc-track-mute${track.muted ? ' active' : ''}" title="Mute this pair in the full mix" ${track.buffer ? '' : 'disabled'}>${track.muted ? 'Muted' : 'Mute'}</button>
       <button class="mc-track-upload">${track.buffer ? 'Replace' : 'Upload'}</button>
       <button class="mc-track-clear" title="Clear this track" ${track.buffer ? '' : 'disabled'}>✕</button>
     `;
@@ -2654,6 +2672,12 @@ function renderMcTracks() {
     el.querySelector('.mc-track-play').addEventListener('click', () => {
       if (mcState.isPlaying && mcState.playingIndex === i) mcStop();
       else mcPlayTrack(i);
+    });
+    el.querySelector('.mc-track-mute').addEventListener('click', () => {
+      track.muted = !track.muted;
+      // Live-update the playing mix without interrupting playback.
+      if (mcState.trackGains.has(i)) mcState.trackGains.get(i).gain.value = track.muted ? 0 : 1;
+      renderMcTracks();
     });
     el.querySelector('.mc-track-upload').addEventListener('click', () => {
       mcState.uploadTarget = i;
@@ -2677,14 +2701,19 @@ function mcPlayAll(offsetSec = 0) {
   const startAt = ctx.currentTime + 0.08;
   offsetSec = Math.max(0, Math.min(offsetSec, mcState.totalDuration));
 
-  for (const track of loaded) {
-    if (offsetSec >= track.buffer.duration) continue; // already past this pair's end
+  mcState.tracks.forEach((track, i) => {
+    if (!track.buffer) return;
+    if (offsetSec >= track.buffer.duration) return; // already past this pair's end
     const src = ctx.createBufferSource();
     src.buffer = track.buffer;
-    src.connect(ctx.destination);
+    const gain = ctx.createGain();
+    gain.gain.value = track.muted ? 0 : 1;
+    src.connect(gain);
+    gain.connect(ctx.destination);
     src.start(startAt, offsetSec);
     mcState.scheduledSources.push(src);
-  }
+    mcState.trackGains.set(i, gain);
+  });
 
   mcState.playStartTime = startAt;
   mcState.seekOffset = offsetSec;
@@ -2739,6 +2768,7 @@ function mcTick() {
 function mcStop() {
   mcState.scheduledSources.forEach(src => { try { src.stop(); } catch (e) {} });
   mcState.scheduledSources = [];
+  mcState.trackGains.clear();
   mcState.isPlaying = false;
   mcState.playingIndex = null;
   mcState.seekOffset = 0;
