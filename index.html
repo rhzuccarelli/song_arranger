@@ -1069,6 +1069,180 @@ header {
 
 .crop-info .kept { color: var(--ink); font-weight: 700; }
 
+/* ========== MODE TABS ========== */
+.mode-tabs {
+  display: flex;
+  border: 1px solid var(--ink);
+}
+
+.mode-tab {
+  font-family: var(--font-mono);
+  background: var(--paper);
+  color: var(--ink);
+  border: none;
+  padding: 7px 13px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.mode-tab + .mode-tab { border-left: 1px solid var(--ink); }
+
+.mode-tab.active {
+  background: var(--ink);
+  color: var(--ink-invert);
+}
+
+.mode-tab:hover:not(.active) {
+  background: var(--hairline);
+}
+
+/* ========== MULTI-CHANNEL MIXER ========== */
+.mc-app {
+  display: none;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.mc-app.active { display: flex; }
+
+.mc-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  background: var(--paper);
+}
+
+.mc-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.mc-tracks {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.mc-track {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--hairline);
+  transition: background 0.12s ease;
+}
+
+.mc-track:hover { background: var(--hairline); }
+
+.mc-track-index {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  padding: 14px 14px 14px 26px;
+  display: flex;
+  align-items: center;
+  min-width: 56px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mc-track-content {
+  flex: 1;
+  padding: 11px 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.mc-track-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  padding: 2px 0;
+  width: 140px;
+  flex-shrink: 0;
+}
+
+.mc-track-label:hover, .mc-track-label:focus {
+  outline: none;
+  border-bottom-color: var(--rule);
+}
+
+.mc-track-channels {
+  font-size: 9.5px;
+  color: var(--muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  min-width: 70px;
+}
+
+.mc-track-status {
+  font-size: 9.5px;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mc-track-status.loaded { color: var(--ink); }
+
+.mc-track-play,
+.mc-track-upload,
+.mc-track-clear {
+  border: none;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: color 0.12s;
+  font-family: var(--font-mono);
+}
+
+.mc-track-play:hover,
+.mc-track-upload:hover { color: var(--ink); }
+
+.mc-track-clear:hover { color: var(--danger); }
+
+.mc-track-clear:disabled,
+.mc-track-play:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.mc-export-name {
+  font-family: var(--font-mono);
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  font-size: 10px;
+  padding: 7px 10px;
+  letter-spacing: 0.04em;
+  min-width: 180px;
+}
+
+.mc-export-name:hover { border-color: var(--ink); }
+.mc-export-name:focus { outline: none; border-color: var(--ink); }
+
 /* ========== MOBILE/NARROW ========== */
 @media (max-width: 800px) {
   .app { grid-template-columns: 1fr; grid-template-rows: 280px 1fr; }
@@ -1087,6 +1261,10 @@ header {
     <span class="logo-tag">Rev 2.0</span>
   </div>
   <div class="header-actions">
+    <div class="mode-tabs">
+      <button id="mode-stems-btn" class="mode-tab active">Stem Arranger</button>
+      <button id="mode-mc-btn" class="mode-tab">Multi-Channel WAV</button>
+    </div>
     <button id="load-btn" class="btn btn-ghost">Load Folder</button>
   </div>
 </header>
@@ -1169,8 +1347,60 @@ header {
   </section>
 </div>
 
+<!-- Multi-Channel Mixer -->
+<div class="mc-app" id="mc-app">
+  <section class="mc-panel">
+    <div class="panel-header">
+      <div class="panel-title">Multi-Channel Mix</div>
+      <div class="mc-controls">
+        <div class="bpb-control">
+          <span class="bpb-label">Stereo Pairs</span>
+          <select id="mc-pair-count" class="bpb-select">
+            <option value="1">1 · 2ch</option>
+            <option value="2">2 · 4ch</option>
+            <option value="3">3 · 6ch</option>
+            <option value="4">4 · 8ch</option>
+            <option value="5">5 · 10ch</option>
+            <option value="6">6 · 12ch</option>
+          </select>
+        </div>
+        <button id="mc-import-btn" class="btn btn-ghost">Import Multi-Channel WAV</button>
+      </div>
+      <div class="arrangement-meta">
+        <div class="meta-item">
+          <div class="meta-label">Channels</div>
+          <div class="meta-value" id="mc-meta-channels">2</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Sample Rate</div>
+          <div class="meta-value" id="mc-meta-samplerate">—</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Length</div>
+          <div class="meta-value accent" id="mc-meta-duration">0:00</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mc-tracks" id="mc-tracks"></div>
+
+    <div class="transport">
+      <button id="mc-play-btn" class="transport-btn" disabled title="Play / Pause mix">▶</button>
+      <button id="mc-stop-btn" class="transport-btn" title="Stop">■</button>
+      <div class="transport-time" id="mc-transport-time">0:00 / 0:00</div>
+      <div class="transport-progress" id="mc-transport-progress">
+        <div class="transport-progress-bar" id="mc-transport-progress-bar"></div>
+      </div>
+      <input id="mc-export-name" class="mc-export-name" type="text" value="multichannel_mix.wav" spellcheck="false" title="Export filename">
+      <button id="mc-export-btn" class="btn btn-primary" disabled>Export Multi-Channel WAV</button>
+    </div>
+  </section>
+</div>
+
 <!-- Hidden file input -->
 <input type="file" id="file-input" webkitdirectory directory multiple style="display:none" />
+<input type="file" id="mc-import-input" accept="audio/wav,audio/x-wav,.wav" style="display:none" />
+<input type="file" id="mc-track-input" accept="audio/*" style="display:none" />
 
 <!-- Loading overlay -->
 <div class="overlay" id="overlay">
@@ -1185,6 +1415,7 @@ header {
 // ============================================================
 // STATE
 // ============================================================
+let currentMode = 'stems'; // 'stems' | 'mc'
 const state = {
   audioCtx: null,
   stems: {},                  // { section: { loop: { instrument: AudioBuffer } } }
@@ -2126,6 +2357,338 @@ async function exportStems() {
 }
 
 // ============================================================
+// MULTI-CHANNEL MIXER
+// ============================================================
+// Builds/edits a single interleaved WAV made of 1-6 independent stereo
+// pairs. Each pair can be loaded from its own file and re-uploaded later
+// without touching the others; importing a multi-channel WAV splits it
+// back into its constituent pairs for editing.
+const mcState = {
+  tracks: [],            // [{ label, buffer: 2ch AudioBuffer|null, fileName, customLabel }]
+  sampleRate: null,
+  isPlaying: false,
+  playingIndex: null,    // null = full mix, index = solo pair
+  scheduledSources: [],
+  playStartTime: 0,
+  rafId: null,
+  totalDuration: 0,
+  uploadTarget: null,    // track index awaiting a file from #mc-track-input
+};
+
+function mcMakeTrack(i) {
+  return { label: `Track ${i + 1}`, buffer: null, fileName: null, customLabel: false };
+}
+
+function mcInit() {
+  mcState.tracks = [mcMakeTrack(0)];
+  renderMcTracks();
+}
+
+function mcSetPairCount(n, { silent } = {}) {
+  n = Math.max(1, Math.min(6, n));
+  const current = mcState.tracks.length;
+  if (n < current) {
+    const removedLoaded = mcState.tracks.slice(n).some(t => t.buffer);
+    if (removedLoaded && !silent && !confirm(`Remove ${mcState.tracks.length - n} pair(s) that still have audio loaded?`)) {
+      $('#mc-pair-count').value = current;
+      return;
+    }
+    mcState.tracks = mcState.tracks.slice(0, n);
+  } else if (n > current) {
+    for (let i = current; i < n; i++) mcState.tracks.push(mcMakeTrack(i));
+  }
+  if (mcState.isPlaying) mcStop();
+  renderMcTracks();
+}
+
+// Duplicate a mono file to both channels; leave stereo as-is; reject anything else.
+function mcUpmixToStereo(buffer) {
+  if (buffer.numberOfChannels === 2) return buffer;
+  if (buffer.numberOfChannels === 1) {
+    const ctx = ensureAudioCtx();
+    const stereo = ctx.createBuffer(2, buffer.length, buffer.sampleRate);
+    stereo.copyToChannel(buffer.getChannelData(0), 0);
+    stereo.copyToChannel(buffer.getChannelData(0), 1);
+    return stereo;
+  }
+  return null;
+}
+
+function mcSplitToStereoPairs(buffer) {
+  const ctx = ensureAudioCtx();
+  const pairs = [];
+  const pairCount = buffer.numberOfChannels / 2;
+  for (let p = 0; p < pairCount; p++) {
+    const pair = ctx.createBuffer(2, buffer.length, buffer.sampleRate);
+    pair.copyToChannel(buffer.getChannelData(p * 2), 0);
+    pair.copyToChannel(buffer.getChannelData(p * 2 + 1), 1);
+    pairs.push(pair);
+  }
+  return pairs;
+}
+
+// Import a whole multi-channel WAV (2-12 channels, even) and split it into
+// independently editable stereo pairs, replacing the current project.
+async function mcImportFile(file) {
+  const hasLoaded = mcState.tracks.some(t => t.buffer);
+  if (hasLoaded && !confirm('Importing will replace the current multi-channel project. Continue?')) return;
+
+  showOverlay('Importing <em>WAV</em>', file.name);
+  try {
+    const ctx = ensureAudioCtx();
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = await ctx.decodeAudioData(arrayBuffer);
+    const ch = buffer.numberOfChannels;
+
+    if (ch < 2 || ch > 12 || ch % 2 !== 0) {
+      hideOverlay();
+      toast(`Unsupported channel count (${ch}) — expected an even number from 2 to 12 (1–6 stereo pairs)`, 'error');
+      return;
+    }
+
+    const pairs = mcSplitToStereoPairs(buffer);
+    mcState.sampleRate = buffer.sampleRate;
+    mcState.tracks = pairs.map((pairBuf, i) => ({
+      label: `Track ${i + 1}`,
+      buffer: pairBuf,
+      fileName: file.name,
+      customLabel: false,
+    }));
+    $('#mc-pair-count').value = pairs.length;
+    if (mcState.isPlaying) mcStop();
+    hideOverlay();
+    renderMcTracks();
+    toast(`Imported ${pairs.length}-pair (${ch}ch) WAV`, 'success');
+  } catch (err) {
+    console.warn('Multi-channel import failed', err);
+    hideOverlay();
+    toast('Could not decode that file', 'error');
+  }
+}
+
+// Load/replace the audio for a single stereo pair without touching the others.
+async function mcUploadTrackFile(index, file) {
+  const track = mcState.tracks[index];
+  if (!track) return;
+
+  try {
+    const ctx = ensureAudioCtx();
+    const arrayBuffer = await file.arrayBuffer();
+    const decoded = await ctx.decodeAudioData(arrayBuffer);
+
+    if (decoded.numberOfChannels > 2) {
+      toast(`${file.name} has ${decoded.numberOfChannels} channels — upload a mono or stereo file for a single track`, 'error');
+      return;
+    }
+
+    const stereo = mcUpmixToStereo(decoded);
+    if (!mcState.sampleRate) mcState.sampleRate = stereo.sampleRate;
+
+    track.buffer = stereo;
+    track.fileName = file.name;
+    if (!track.customLabel) track.label = file.name.replace(/\.[^.]+$/, '').toUpperCase();
+
+    if (mcState.isPlaying) mcStop();
+    renderMcTracks();
+  } catch (err) {
+    console.warn('Track upload failed', err);
+    toast(`Could not decode ${file.name}`, 'error');
+  }
+}
+
+function mcClearTrack(index) {
+  const track = mcState.tracks[index];
+  if (!track || !track.buffer) return;
+  track.buffer = null;
+  track.fileName = null;
+  if (mcState.isPlaying) mcStop();
+  renderMcTracks();
+}
+
+function mcTotalDuration() {
+  return mcState.tracks.reduce((max, t) => t.buffer ? Math.max(max, t.buffer.duration) : max, 0);
+}
+
+function updateMcMeta() {
+  mcState.totalDuration = mcTotalDuration();
+  if (!mcState.tracks.some(t => t.buffer)) mcState.sampleRate = null;
+
+  $('#mc-meta-channels').textContent = mcState.tracks.length * 2;
+  $('#mc-meta-samplerate').textContent = mcState.sampleRate ? `${mcState.sampleRate} Hz` : '—';
+  $('#mc-meta-duration').textContent = fmtTime(mcState.totalDuration);
+  $('#mc-transport-time').textContent = `0:00 / ${fmtTime(mcState.totalDuration)}`;
+
+  const hasContent = mcState.tracks.some(t => t.buffer);
+  $('#mc-play-btn').disabled = !hasContent;
+  $('#mc-export-btn').disabled = !hasContent;
+}
+
+function renderMcTracks() {
+  const wrap = $('#mc-tracks');
+  wrap.innerHTML = '';
+
+  mcState.tracks.forEach((track, i) => {
+    const el = document.createElement('div');
+    el.className = 'mc-track';
+    el.dataset.index = i;
+    const status = track.buffer
+      ? `${track.fileName || 'Loaded'} — ${fmtTime(track.buffer.duration)}`
+      : 'Empty — no audio loaded';
+
+    el.innerHTML = `
+      <div class="mc-track-index">${String(i + 1).padStart(2, '0')}</div>
+      <div class="mc-track-content">
+        <input class="mc-track-label" value="${track.label}" spellcheck="false" title="Track name">
+        <div class="mc-track-channels">CH ${i * 2 + 1}–${i * 2 + 2}</div>
+        <div class="mc-track-status${track.buffer ? ' loaded' : ''}">${status}</div>
+      </div>
+      <button class="mc-track-play" title="Play this pair on its own" ${track.buffer ? '' : 'disabled'}>${mcState.isPlaying && mcState.playingIndex === i ? '⏸' : '▶'}</button>
+      <button class="mc-track-upload">${track.buffer ? 'Replace' : 'Upload'}</button>
+      <button class="mc-track-clear" title="Clear this track" ${track.buffer ? '' : 'disabled'}>✕</button>
+    `;
+
+    el.querySelector('.mc-track-label').addEventListener('change', e => {
+      track.label = e.target.value.trim() || `Track ${i + 1}`;
+      track.customLabel = true;
+      e.target.value = track.label;
+    });
+    el.querySelector('.mc-track-play').addEventListener('click', () => {
+      if (mcState.isPlaying && mcState.playingIndex === i) mcStop();
+      else mcPlayTrack(i);
+    });
+    el.querySelector('.mc-track-upload').addEventListener('click', () => {
+      mcState.uploadTarget = i;
+      $('#mc-track-input').click();
+    });
+    el.querySelector('.mc-track-clear').addEventListener('click', () => mcClearTrack(i));
+
+    wrap.appendChild(el);
+  });
+
+  updateMcMeta();
+}
+
+// ---------- Playback (preview only — real hardware output is stereo) ----------
+function mcPlayAll() {
+  const loaded = mcState.tracks.filter(t => t.buffer);
+  if (loaded.length === 0) return;
+  mcStop();
+  const ctx = ensureAudioCtx();
+  const startAt = ctx.currentTime + 0.08;
+
+  for (const track of loaded) {
+    const src = ctx.createBufferSource();
+    src.buffer = track.buffer;
+    src.connect(ctx.destination);
+    src.start(startAt);
+    mcState.scheduledSources.push(src);
+  }
+
+  mcState.playStartTime = startAt;
+  mcState.isPlaying = true;
+  mcState.playingIndex = null;
+  $('#mc-play-btn').classList.add('playing');
+  $('#mc-play-btn').textContent = '⏸';
+  mcTick();
+}
+
+function mcPlayTrack(index) {
+  const track = mcState.tracks[index];
+  if (!track || !track.buffer) return;
+  mcStop();
+  const ctx = ensureAudioCtx();
+  const startAt = ctx.currentTime + 0.08;
+
+  const src = ctx.createBufferSource();
+  src.buffer = track.buffer;
+  src.connect(ctx.destination);
+  src.start(startAt);
+  mcState.scheduledSources.push(src);
+
+  mcState.playStartTime = startAt;
+  mcState.isPlaying = true;
+  mcState.playingIndex = index;
+  renderMcTracks();
+  mcTick();
+}
+
+function mcTick() {
+  const ctx = ensureAudioCtx();
+  const duration = mcState.playingIndex === null
+    ? mcState.totalDuration
+    : mcState.tracks[mcState.playingIndex].buffer.duration;
+
+  function step() {
+    if (!mcState.isPlaying) return;
+    const elapsed = ctx.currentTime - mcState.playStartTime;
+    if (elapsed >= duration) { mcStop(); return; }
+    if (mcState.playingIndex === null) {
+      const safe = Math.max(0, elapsed);
+      $('#mc-transport-time').textContent = `${fmtTime(safe)} / ${fmtTime(duration)}`;
+      $('#mc-transport-progress-bar').style.width = `${duration ? (safe / duration) * 100 : 0}%`;
+    }
+    mcState.rafId = requestAnimationFrame(step);
+  }
+  step();
+}
+
+function mcStop() {
+  mcState.scheduledSources.forEach(src => { try { src.stop(); } catch (e) {} });
+  mcState.scheduledSources = [];
+  mcState.isPlaying = false;
+  mcState.playingIndex = null;
+  if (mcState.rafId) cancelAnimationFrame(mcState.rafId);
+
+  $('#mc-play-btn').classList.remove('playing');
+  $('#mc-play-btn').textContent = '▶';
+  $('#mc-transport-time').textContent = `0:00 / ${fmtTime(mcState.totalDuration)}`;
+  $('#mc-transport-progress-bar').style.width = '0%';
+  renderMcTracks();
+}
+
+// ---------- Export ----------
+// Combines every pair's stereo buffer into one interleaved N-channel
+// AudioBuffer and reuses audioBufferToWav() (already channel-count agnostic)
+// to encode it. Empty pairs stay silent; shorter pairs are silence-padded.
+async function mcExport() {
+  const loaded = mcState.tracks.filter(t => t.buffer);
+  if (loaded.length === 0) return;
+  if (mcState.isPlaying) mcStop();
+
+  const ctx = ensureAudioCtx();
+  const numChannels = mcState.tracks.length * 2;
+  const totalSamples = Math.max(1, Math.max(...mcState.tracks.map(t => t.buffer ? t.buffer.length : 0)));
+
+  let combined;
+  try {
+    combined = ctx.createBuffer(numChannels, totalSamples, mcState.sampleRate || ctx.sampleRate);
+  } catch (err) {
+    toast('Could not create a buffer for that many channels', 'error');
+    return;
+  }
+
+  mcState.tracks.forEach((track, i) => {
+    if (!track.buffer) return;
+    combined.copyToChannel(track.buffer.getChannelData(0), i * 2);
+    combined.copyToChannel(track.buffer.getChannelData(1), i * 2 + 1);
+  });
+
+  const blob = audioBufferToWav(combined);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  let name = ($('#mc-export-name').value || 'multichannel_mix.wav').trim();
+  if (!/\.wav$/i.test(name)) name += '.wav';
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+  toast(`Exported ${numChannels}-channel WAV (${loaded.length} pair${loaded.length === 1 ? '' : 's'} loaded)`, 'success');
+}
+
+// ============================================================
 // EVENT WIRING
 // ============================================================
 $('#load-btn').addEventListener('click', () => $('#file-input').click());
@@ -2135,6 +2698,55 @@ $('#file-input').addEventListener('change', e => {
   if (e.target.files.length > 0) loadFolder(e.target.files);
   e.target.value = '';
 });
+
+// ---------- Mode switching ----------
+function setMode(mode) {
+  stop();
+  mcStop();
+  currentMode = mode;
+  const isStems = mode === 'stems';
+  $('#mode-stems-btn').classList.toggle('active', isStems);
+  $('#mode-mc-btn').classList.toggle('active', !isStems);
+  $('#load-btn').style.display = isStems ? '' : 'none';
+  $('#mc-app').classList.toggle('active', !isStems);
+  if (isStems) {
+    $('#empty-state').style.display = state.sectionOrder.length ? 'none' : 'flex';
+    $('#app').classList.toggle('active', state.sectionOrder.length > 0);
+  } else {
+    $('#empty-state').style.display = 'none';
+    $('#app').classList.remove('active');
+  }
+}
+
+$('#mode-stems-btn').addEventListener('click', () => setMode('stems'));
+$('#mode-mc-btn').addEventListener('click', () => setMode('mc'));
+
+// ---------- Multi-channel mixer wiring ----------
+$('#mc-pair-count').addEventListener('change', e => mcSetPairCount(parseInt(e.target.value, 10)));
+$('#mc-import-btn').addEventListener('click', () => $('#mc-import-input').click());
+$('#mc-import-input').addEventListener('change', e => {
+  if (e.target.files.length > 0) mcImportFile(e.target.files[0]);
+  e.target.value = '';
+});
+$('#mc-track-input').addEventListener('change', e => {
+  if (e.target.files.length > 0 && mcState.uploadTarget !== null) {
+    mcUploadTrackFile(mcState.uploadTarget, e.target.files[0]);
+  }
+  mcState.uploadTarget = null;
+  e.target.value = '';
+});
+$('#mc-play-btn').addEventListener('click', () => {
+  if (mcState.isPlaying) mcStop();
+  else mcPlayAll();
+});
+$('#mc-stop-btn').addEventListener('click', mcStop);
+$('#mc-export-btn').addEventListener('click', mcExport);
+$('#mc-transport-progress').addEventListener('click', () => {
+  // Seeking isn't supported for the mixer preview — restart from the top instead.
+  if (mcState.tracks.some(t => t.buffer)) { mcStop(); mcPlayAll(); }
+});
+
+mcInit();
 
 $('#play-btn').addEventListener('click', () => {
   if (state.isPlaying) stop();
@@ -2196,8 +2808,14 @@ document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.code === 'Space') {
     e.preventDefault();
-    if (state.arrangement.length > 0) {
-      if (state.isPlaying) stop(); else play();
+    if (currentMode === 'stems') {
+      if (state.arrangement.length > 0) {
+        if (state.isPlaying) stop(); else play();
+      }
+    } else {
+      if (mcState.tracks.some(t => t.buffer)) {
+        if (mcState.isPlaying) mcStop(); else mcPlayAll();
+      }
     }
   }
 });
