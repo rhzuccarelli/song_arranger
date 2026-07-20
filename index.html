@@ -1353,6 +1353,11 @@ header {
     <div class="panel-header">
       <div class="panel-title">Multi-Channel Mix</div>
       <div class="mc-controls">
+        <div class="bpm-control">
+          <span class="bpm-label">Tempo</span>
+          <input id="mc-tempo-input" class="bpm-input" type="number" min="20" max="300" step="0.01" placeholder="—" title="Song tempo — embedded in the exported WAV as an ACID tempo chunk">
+          <span class="bpm-detected" id="mc-tempo-detected" title="Click to apply the tempo read from the imported file"></span>
+        </div>
         <div class="bpb-control">
           <span class="bpb-label">Stereo Pairs</span>
           <select id="mc-pair-count" class="bpb-select">
@@ -1430,6 +1435,7 @@ const state = {
   playingBlockId: null,       // id of the block playing solo, or null for full-arrangement playback
   scheduledSources: [],
   playStartTime: 0,
+  seekOffset: 0,              // seconds into the arrangement that playStartTime corresponds to
   rafId: null,
   totalDuration: 0
 };
@@ -2114,13 +2120,16 @@ function renderArrangement() {
 // ============================================================
 // PLAYBACK
 // ============================================================
-function play() {
+// offsetSec: seek into the arrangement and start playback from there.
+function play(offsetSec = 0) {
   if (state.arrangement.length === 0) return;
   stop();
   const ctx = ensureAudioCtx();
 
+  offsetSec = Math.max(0, Math.min(offsetSec, state.totalDuration));
   const startAt = ctx.currentTime + 0.08;
-  let cursor = startAt;
+  let cursor = 0;   // cumulative position along the arrangement timeline
+  let schedAt = startAt; // ctx time to schedule the next block at
 
   for (const block of state.arrangement) {
     const stems = state.stems[block.section]?.[block.loop];
@@ -2129,17 +2138,26 @@ function play() {
     const blockDur      = getBlockDuration(block);
     if (blockDur <= 0) continue;
 
+    const blockStart = cursor;
+    cursor += blockDur;
+    if (cursor <= offsetSec) continue; // this block is entirely before the seek point
+
+    const innerOffset = Math.max(0, offsetSec - blockStart);
+    const playDur = blockDur - innerOffset;
+    if (playDur <= 0) continue;
+
     for (const buffer of Object.values(stems)) {
       const src = ctx.createBufferSource();
       src.buffer = buffer;
       src.connect(ctx.destination);
-      src.start(cursor, trimStartSecs, blockDur);
+      src.start(schedAt, trimStartSecs + innerOffset, playDur);
       state.scheduledSources.push(src);
     }
-    cursor += blockDur;
+    schedAt += playDur;
   }
 
   state.playStartTime = startAt;
+  state.seekOffset = offsetSec;
   state.isPlaying = true;
 
   $('#play-btn').classList.add('playing');
@@ -2147,7 +2165,7 @@ function play() {
 
   function tick() {
     if (!state.isPlaying) return;
-    const elapsed = ctx.currentTime - state.playStartTime;
+    const elapsed = (ctx.currentTime - state.playStartTime) + state.seekOffset;
     if (elapsed >= state.totalDuration) {
       stop();
       return;
@@ -2222,6 +2240,7 @@ function stop() {
   state.scheduledSources = [];
   state.isPlaying = false;
   state.playingBlockId = null;
+  state.seekOffset = 0;
   if (state.rafId) cancelAnimationFrame(state.rafId);
 
   $('#play-btn').classList.remove('playing');
@@ -2235,12 +2254,15 @@ function stop() {
 // ============================================================
 // WAV ENCODING
 // ============================================================
-function audioBufferToWav(buffer) {
+// extraChunks: optional [{ id: 'acid', bytes: Uint8Array }] inserted between
+// the fmt and data chunks (e.g. an ACID tempo chunk).
+function audioBufferToWav(buffer, extraChunks = []) {
   const numChannels = buffer.numberOfChannels;
   const sampleRate = buffer.sampleRate;
   const bytesPerSample = 2;
   const dataSize = buffer.length * numChannels * bytesPerSample;
-  const fileSize = 44 + dataSize;
+  const extraSize = extraChunks.reduce((sum, c) => sum + 8 + c.bytes.length + (c.bytes.length % 2), 0);
+  const fileSize = 44 + extraSize + dataSize;
   const arrayBuffer = new ArrayBuffer(fileSize);
   const view = new DataView(arrayBuffer);
 
@@ -2259,14 +2281,24 @@ function audioBufferToWav(buffer) {
   view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
   view.setUint16(32, numChannels * bytesPerSample, true);
   view.setUint16(34, 8 * bytesPerSample, true);
-  writeString(36, 'data');
-  view.setUint32(40, dataSize, true);
+
+  let offset = 36;
+  for (const chunk of extraChunks) {
+    writeString(offset, chunk.id.padEnd(4, ' ').slice(0, 4));
+    view.setUint32(offset + 4, chunk.bytes.length, true);
+    new Uint8Array(arrayBuffer, offset + 8, chunk.bytes.length).set(chunk.bytes);
+    offset += 8 + chunk.bytes.length;
+    if (chunk.bytes.length % 2 !== 0) offset += 1; // pad byte, already zero-initialized
+  }
+
+  writeString(offset, 'data');
+  view.setUint32(offset + 4, dataSize, true);
+  offset += 8;
 
   // Interleave channels
   const channels = [];
   for (let c = 0; c < numChannels; c++) channels.push(buffer.getChannelData(c));
 
-  let offset = 44;
   for (let i = 0; i < buffer.length; i++) {
     for (let c = 0; c < numChannels; c++) {
       let s = channels[c][i];
@@ -2276,6 +2308,46 @@ function audioBufferToWav(buffer) {
     }
   }
   return new Blob([arrayBuffer], { type: 'audio/wav' });
+}
+
+// ---------- ACID chunk (tempo metadata embedded by Acid/Ableton/etc.) ----------
+// Layout (24 bytes): dwType, wRootNote, wUnknown, fUnknown, dwNumBeats,
+// wMeterDenominator, wMeterNumerator, fTempo — fTempo is what we care about.
+function findRiffChunk(arrayBuffer, chunkId) {
+  const view = new DataView(arrayBuffer);
+  if (view.byteLength < 12) return null;
+  const riffTag = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+  if (riffTag !== 'RIFF') return null;
+  let offset = 12;
+  while (offset + 8 <= view.byteLength) {
+    const id = String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3));
+    const size = view.getUint32(offset + 4, true);
+    if (id === chunkId) return { offset: offset + 8, size };
+    offset += 8 + size + (size % 2);
+  }
+  return null;
+}
+
+function readAcidTempo(arrayBuffer) {
+  const chunk = findRiffChunk(arrayBuffer, 'acid');
+  if (!chunk || chunk.size < 24) return null;
+  const view = new DataView(arrayBuffer, chunk.offset, chunk.size);
+  const tempo = view.getFloat32(20, true);
+  return (tempo > 0 && isFinite(tempo)) ? tempo : null;
+}
+
+function buildAcidChunk(tempo) {
+  const bytes = new Uint8Array(24);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x01, true);   // dwType: one-shot (this is a fixed render, not a seamless loop)
+  view.setUint16(4, 60, true);     // wRootNote: C4 — unused by this app, kept for compatibility
+  view.setUint16(6, 0x8000, true); // wUnknown (conventionally 0x8000)
+  view.setFloat32(8, 1.0, true);   // fUnknown (conventionally 1.0)
+  view.setUint32(12, 0, true);     // dwNumBeats — not tracked
+  view.setUint16(16, 4, true);     // wMeterDenominator
+  view.setUint16(18, 4, true);     // wMeterNumerator
+  view.setFloat32(20, tempo, true);
+  return { id: 'acid', bytes };
 }
 
 // ============================================================
@@ -2366,10 +2438,13 @@ async function exportStems() {
 const mcState = {
   tracks: [],            // [{ label, buffer: 2ch AudioBuffer|null, fileName, customLabel }]
   sampleRate: null,
+  tempo: null,            // user-set/imported project tempo (BPM) — embedded on export
+  detectedTempo: null,    // tempo read from an imported file's ACID chunk, if any
   isPlaying: false,
   playingIndex: null,    // null = full mix, index = solo pair
   scheduledSources: [],
   playStartTime: 0,
+  seekOffset: 0,         // seconds into the mix that playStartTime corresponds to
   rafId: null,
   totalDuration: 0,
   uploadTarget: null,    // track index awaiting a file from #mc-track-input
@@ -2437,6 +2512,9 @@ async function mcImportFile(file) {
   try {
     const ctx = ensureAudioCtx();
     const arrayBuffer = await file.arrayBuffer();
+    // Read the ACID tempo chunk before decoding — decodeAudioData only
+    // returns raw PCM and discards metadata chunks like this one.
+    const detected = readAcidTempo(arrayBuffer);
     const buffer = await ctx.decodeAudioData(arrayBuffer);
     const ch = buffer.numberOfChannels;
 
@@ -2455,10 +2533,18 @@ async function mcImportFile(file) {
       customLabel: false,
     }));
     $('#mc-pair-count').value = pairs.length;
+
+    mcState.detectedTempo = detected;
+    if (detected) {
+      mcState.tempo = Math.round(detected * 100) / 100;
+      $('#mc-tempo-input').value = mcState.tempo;
+    }
+    updateMcTempoHint();
+
     if (mcState.isPlaying) mcStop();
     hideOverlay();
     renderMcTracks();
-    toast(`Imported ${pairs.length}-pair (${ch}ch) WAV`, 'success');
+    toast(`Imported ${pairs.length}-pair (${ch}ch) WAV${detected ? ` · ${Math.round(detected)} BPM` : ''}`, 'success');
   } catch (err) {
     console.warn('Multi-channel import failed', err);
     hideOverlay();
@@ -2507,6 +2593,19 @@ function mcClearTrack(index) {
 
 function mcTotalDuration() {
   return mcState.tracks.reduce((max, t) => t.buffer ? Math.max(max, t.buffer.duration) : max, 0);
+}
+
+// Show the tempo read from an imported file as a hint the user can click to apply.
+function updateMcTempoHint() {
+  const el = $('#mc-tempo-detected');
+  if (!el) return;
+  if (!mcState.detectedTempo) { el.textContent = ''; el.onclick = null; return; }
+  const rounded = Math.round(mcState.detectedTempo * 100) / 100;
+  el.textContent = `from file: ${rounded}`;
+  el.onclick = () => {
+    mcState.tempo = rounded;
+    $('#mc-tempo-input').value = rounded;
+  };
 }
 
 function updateMcMeta() {
@@ -2569,22 +2668,26 @@ function renderMcTracks() {
 }
 
 // ---------- Playback (preview only — real hardware output is stereo) ----------
-function mcPlayAll() {
+// offsetSec: seek into the mix and start playback from there.
+function mcPlayAll(offsetSec = 0) {
   const loaded = mcState.tracks.filter(t => t.buffer);
   if (loaded.length === 0) return;
   mcStop();
   const ctx = ensureAudioCtx();
   const startAt = ctx.currentTime + 0.08;
+  offsetSec = Math.max(0, Math.min(offsetSec, mcState.totalDuration));
 
   for (const track of loaded) {
+    if (offsetSec >= track.buffer.duration) continue; // already past this pair's end
     const src = ctx.createBufferSource();
     src.buffer = track.buffer;
     src.connect(ctx.destination);
-    src.start(startAt);
+    src.start(startAt, offsetSec);
     mcState.scheduledSources.push(src);
   }
 
   mcState.playStartTime = startAt;
+  mcState.seekOffset = offsetSec;
   mcState.isPlaying = true;
   mcState.playingIndex = null;
   $('#mc-play-btn').classList.add('playing');
@@ -2606,6 +2709,7 @@ function mcPlayTrack(index) {
   mcState.scheduledSources.push(src);
 
   mcState.playStartTime = startAt;
+  mcState.seekOffset = 0;
   mcState.isPlaying = true;
   mcState.playingIndex = index;
   renderMcTracks();
@@ -2620,7 +2724,7 @@ function mcTick() {
 
   function step() {
     if (!mcState.isPlaying) return;
-    const elapsed = ctx.currentTime - mcState.playStartTime;
+    const elapsed = (ctx.currentTime - mcState.playStartTime) + mcState.seekOffset;
     if (elapsed >= duration) { mcStop(); return; }
     if (mcState.playingIndex === null) {
       const safe = Math.max(0, elapsed);
@@ -2637,6 +2741,7 @@ function mcStop() {
   mcState.scheduledSources = [];
   mcState.isPlaying = false;
   mcState.playingIndex = null;
+  mcState.seekOffset = 0;
   if (mcState.rafId) cancelAnimationFrame(mcState.rafId);
 
   $('#mc-play-btn').classList.remove('playing');
@@ -2673,7 +2778,8 @@ async function mcExport() {
     combined.copyToChannel(track.buffer.getChannelData(1), i * 2 + 1);
   });
 
-  const blob = audioBufferToWav(combined);
+  const extraChunks = mcState.tempo > 0 ? [buildAcidChunk(mcState.tempo)] : [];
+  const blob = audioBufferToWav(combined, extraChunks);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -2685,7 +2791,8 @@ async function mcExport() {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 
-  toast(`Exported ${numChannels}-channel WAV (${loaded.length} pair${loaded.length === 1 ? '' : 's'} loaded)`, 'success');
+  const tempoNote = mcState.tempo > 0 ? ` · ${mcState.tempo} BPM embedded` : '';
+  toast(`Exported ${numChannels}-channel WAV (${loaded.length} pair${loaded.length === 1 ? '' : 's'} loaded)${tempoNote}`, 'success');
 }
 
 // ============================================================
@@ -2722,6 +2829,11 @@ $('#mode-stems-btn').addEventListener('click', () => setMode('stems'));
 $('#mode-mc-btn').addEventListener('click', () => setMode('mc'));
 
 // ---------- Multi-channel mixer wiring ----------
+$('#mc-tempo-input').addEventListener('change', e => {
+  const v = parseFloat(e.target.value);
+  mcState.tempo = (!isNaN(v) && v > 0) ? v : null;
+  e.target.value = mcState.tempo || '';
+});
 $('#mc-pair-count').addEventListener('change', e => mcSetPairCount(parseInt(e.target.value, 10)));
 $('#mc-import-btn').addEventListener('click', () => $('#mc-import-input').click());
 $('#mc-import-input').addEventListener('change', e => {
@@ -2741,9 +2853,11 @@ $('#mc-play-btn').addEventListener('click', () => {
 });
 $('#mc-stop-btn').addEventListener('click', mcStop);
 $('#mc-export-btn').addEventListener('click', mcExport);
-$('#mc-transport-progress').addEventListener('click', () => {
-  // Seeking isn't supported for the mixer preview — restart from the top instead.
-  if (mcState.tracks.some(t => t.buffer)) { mcStop(); mcPlayAll(); }
+$('#mc-transport-progress').addEventListener('click', e => {
+  if (!mcState.tracks.some(t => t.buffer) || mcState.totalDuration <= 0) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  mcPlayAll(ratio * mcState.totalDuration);
 });
 
 mcInit();
@@ -2795,12 +2909,10 @@ $('#beats-per-bar').addEventListener('change', e => {
 
 // Click on progress to seek
 $('#transport-progress').addEventListener('click', e => {
-  if (state.arrangement.length === 0) return;
+  if (state.arrangement.length === 0 || state.totalDuration <= 0) return;
   const rect = e.currentTarget.getBoundingClientRect();
-  const ratio = (e.clientX - rect.left) / rect.width;
-  stop();
-  if (ratio < 0.05) return;
-  play();
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  play(ratio * state.totalDuration);
 });
 
 // Keyboard shortcuts
