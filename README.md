@@ -64,6 +64,24 @@ Supported audio formats: `wav`, `mp3`, `m4a`, `aif`, `aiff`, `ogg`, `flac`.
 6. Press play (or Space) to preview.
 7. Click **Export Stems** to download one WAV per instrument.
 
+## Multi-Channel WAV mixer
+
+Switch to **Multi-Channel WAV** in the header to build or edit interleaved
+multi-channel WAV files made of 1-6 independent stereo pairs (2-12 channels
+total) — e.g. a 6-pair surround/stem-print file where pair 1 is drums, pair 2
+is bass, and so on.
+
+- **Set the pair count** (1-6) to size the project.
+- **Upload** a mono or stereo file into any individual pair without touching
+  the others.
+- **Import** an existing multi-channel WAV (2-12 channels, even) to split it
+  back into its stereo pairs for editing — replace just the pairs you want
+  (e.g. re-record pair 1) and re-export.
+- **Export** writes one interleaved WAV with all pairs combined; empty or
+  shorter pairs are padded with silence.
+- Preview playback mixes every pair down to your stereo output — the
+  interleaving itself only exists in the exported file.
+
 ## Notes
 
 - Everything is processed client-side; your audio never leaves your machine.
