@@ -152,6 +152,13 @@ header {
   gap: 28px;
   padding: 40px;
   text-align: center;
+  transition: background 0.12s ease;
+}
+
+.empty-state.drag-over-import,
+.library.drag-over-import {
+  background: var(--hairline);
+  box-shadow: inset 0 0 0 2px var(--ink);
 }
 
 .empty-title {
@@ -1284,6 +1291,17 @@ header {
   cursor: not-allowed;
 }
 
+/* Dropping an audio file onto a single row loads/replaces just that pair */
+.mc-track.drag-over-file {
+  box-shadow: inset 0 0 0 2px var(--ink);
+  background: var(--hairline);
+}
+
+/* Dropping a file anywhere else in the mixer imports it as a new multi-channel project */
+.mc-panel.drag-over-import {
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
 .mc-export-name {
   font-family: var(--font-mono);
   background: var(--paper);
@@ -1702,6 +1720,83 @@ function updateOverlay(progress, status) {
 
 function hideOverlay() {
   $('#overlay').classList.remove('active');
+}
+
+// ============================================================
+// DRAG & DROP IMPORT (OS files/folders dropped onto the page)
+// ============================================================
+
+// Walk a dropped DataTransferItem's file-system entry tree, collecting
+// { file, relativePath } for every leaf file. webkitGetAsEntry() is how a
+// <input webkitdirectory> folder differs from a drag: the drop only gives
+// us entries, so we recurse manually and rebuild the relative path that
+// loadFolder() otherwise gets for free from webkitRelativePath.
+async function traverseEntry(entry, path, out) {
+  if (entry.isFile) {
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    out.push({ file, relativePath: path + entry.name });
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    // readEntries() only returns a batch at a time (Chrome caps it ~100) —
+    // keep calling until it comes back empty.
+    let batch;
+    do {
+      batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      for (const child of batch) await traverseEntry(child, path + entry.name + '/', out);
+    } while (batch.length > 0);
+  }
+}
+
+// Turn a drop's DataTransfer into a flat list of loadFolder()-compatible
+// pseudo-Files (name + webkitRelativePath + arrayBuffer()).
+async function filesFromDataTransfer(dataTransfer) {
+  const items = Array.from(dataTransfer.items || []);
+  const entries = items.map(it => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+
+  if (entries.length === 0) {
+    // No file-system entry support — fall back to the flat file list
+    // (works for individual files, not folders).
+    return Array.from(dataTransfer.files);
+  }
+
+  const collected = [];
+  for (const entry of entries) await traverseEntry(entry, '', collected);
+  return collected.map(({ file, relativePath }) => ({
+    name: file.name,
+    webkitRelativePath: relativePath,
+    arrayBuffer: () => file.arrayBuffer(),
+  }));
+}
+
+// Wire a drop zone that only reacts to OS file drags (ignores the app's
+// own internal drags, e.g. arrangement blocks or mixer-track reordering,
+// since those never carry a 'Files' data type). Tracks enter/leave depth
+// so the highlight doesn't flicker as the pointer crosses child elements.
+function enableFileDropZone(el, onDrop, highlightClass = 'drag-over-import') {
+  let depth = 0;
+  el.addEventListener('dragenter', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    depth++;
+    el.classList.add(highlightClass);
+  });
+  el.addEventListener('dragover', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  el.addEventListener('dragleave', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) el.classList.remove(highlightClass);
+  });
+  el.addEventListener('drop', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    depth = 0;
+    el.classList.remove(highlightClass);
+    onDrop(e.dataTransfer);
+  });
 }
 
 // ============================================================
@@ -2715,7 +2810,7 @@ function renderMcTracks() {
       <button class="mc-track-play" title="Play this pair on its own" ${track.buffer ? '' : 'disabled'}>${mcState.isPlaying && mcState.playingIndex === i ? '⏸' : '▶'}</button>
       <button class="mc-track-mute${track.muted ? ' active' : ''}" title="Mute this pair in the full mix" ${track.buffer ? '' : 'disabled'}>${track.muted ? 'Muted' : 'Mute'}</button>
       <button class="mc-track-upload">${track.buffer ? 'Replace' : 'Upload'}</button>
-      <span class="mc-track-dragout${track.buffer ? '' : ' disabled'}" draggable="${track.buffer ? 'true' : 'false'}" title="${track.buffer ? 'Drag out of the browser onto your desktop or file manager to export just this track as a WAV file (Chrome/Edge only)' : 'Load audio to enable'}">⇲</span>
+      <span class="mc-track-dragout${track.buffer ? '' : ' disabled'}" draggable="${track.buffer ? 'true' : 'false'}" title="${track.buffer ? 'Click to export this track as a WAV file, or drag it out of the browser onto your desktop/file manager (Chrome/Edge only)' : 'Load audio to enable'}">⇲</span>
       <button class="mc-track-clear" title="Clear this track" ${track.buffer ? '' : 'disabled'}>✕</button>
     `;
 
@@ -2770,15 +2865,58 @@ function renderMcTracks() {
       renderMcTracks();
     });
 
-    // Drag this single pair straight out of the browser window to export it
-    // as its own WAV file (Chromium's "DownloadURL" drag-out convention —
-    // Firefox/Safari simply won't react, no error either way).
+    // Drop an audio file directly onto a row to load/replace just that pair.
+    // stopPropagation keeps this from also triggering the panel-level
+    // multi-channel import drop zone wired up in the EVENT WIRING section.
+    el.addEventListener('dragenter', e => {
+      if (!e.dataTransfer.types.includes('Files')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.classList.add('drag-over-file');
+    });
+    el.addEventListener('dragover', e => {
+      if (!e.dataTransfer.types.includes('Files')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    el.addEventListener('dragleave', e => {
+      if (!e.dataTransfer.types.includes('Files')) return;
+      e.stopPropagation();
+      el.classList.remove('drag-over-file');
+    });
+    el.addEventListener('drop', e => {
+      if (!e.dataTransfer.types.includes('Files')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.classList.remove('drag-over-file');
+      if (e.dataTransfer.files.length > 0) mcUploadTrackFile(i, e.dataTransfer.files[0]);
+    });
+
+    // Export this single pair as its own WAV: click for a normal download
+    // (works in every browser), or drag the handle straight out of the
+    // browser window onto the desktop/file manager (Chromium's
+    // "DownloadURL" drag-out convention — Firefox/Safari just won't react
+    // to the drag, no error either way, which is why click is the primary
+    // path and drag-out is a bonus for browsers that support it).
     if (track.buffer) {
       const dragoutEl = el.querySelector('.mc-track-dragout');
+      const safeName = (track.label || `Track ${i + 1}`).replace(/[\\/:*?"<>|]+/g, '_').trim() || `Track ${i + 1}`;
+      const extraChunks = mcState.tempo > 0 ? [buildAcidChunk(mcState.tempo)] : [];
+
+      dragoutEl.addEventListener('click', () => {
+        const blob = audioBufferToWav(track.buffer, extraChunks);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${safeName}.wav`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      });
       dragoutEl.addEventListener('dragstart', e => {
         e.stopPropagation();
-        const safeName = (track.label || `Track ${i + 1}`).replace(/[\\/:*?"<>|]+/g, '_').trim() || `Track ${i + 1}`;
-        const extraChunks = mcState.tempo > 0 ? [buildAcidChunk(mcState.tempo)] : [];
         const blob = audioBufferToWav(track.buffer, extraChunks);
         const url = URL.createObjectURL(blob);
         e.dataTransfer.setData('DownloadURL', `audio/wav:${safeName}.wav:${url}`);
@@ -2943,6 +3081,16 @@ $('#file-input').addEventListener('change', e => {
   e.target.value = '';
 });
 
+// Drag the Stems folder straight onto the empty state or the loaded library
+// to (re)import it — same folder structure the file-picker button expects.
+[$('#empty-state'), $('.library')].forEach(el => {
+  enableFileDropZone(el, async dataTransfer => {
+    const files = await filesFromDataTransfer(dataTransfer);
+    if (files.length) loadFolder(files);
+    else toast('No files found in that drop', 'error');
+  });
+});
+
 // ---------- Mode switching ----------
 function setMode(mode) {
   stop();
@@ -2977,6 +3125,14 @@ $('#mc-import-input').addEventListener('change', e => {
   if (e.target.files.length > 0) mcImportFile(e.target.files[0]);
   e.target.value = '';
 });
+
+// Drag a multi-channel WAV anywhere onto the mixer panel to import it.
+// Dropping directly onto a single track row instead loads/replaces just
+// that pair — those rows stop propagation so this handler only sees drops
+// on the panel background (see renderMcTracks()).
+enableFileDropZone($('.mc-panel'), dataTransfer => {
+  if (dataTransfer.files.length > 0) mcImportFile(dataTransfer.files[0]);
+}, 'drag-over-import');
 $('#mc-track-input').addEventListener('change', e => {
   if (e.target.files.length > 0 && mcState.uploadTarget !== null) {
     mcUploadTrackFile(mcState.uploadTarget, e.target.files[0]);
